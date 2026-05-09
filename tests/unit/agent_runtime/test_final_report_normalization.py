@@ -78,11 +78,12 @@ Location: Table 2
 """
 
     normalized = runner._demote_experiment_child_headings(markdown)
+    normalized_lines = normalized.splitlines()
 
-    assert "## Main Result" not in normalized
-    assert "## Ablation Result" not in normalized
-    assert "### Main Result" in normalized
-    assert "### Ablation Result" in normalized
+    assert "## Main Result" not in normalized_lines
+    assert "## Ablation Result" not in normalized_lines
+    assert "### Main Result" in normalized_lines
+    assert "### Ablation Result" in normalized_lines
 
 
 def test_ablation_full_model_text_is_preserved_during_table_normalization() -> None:
@@ -98,6 +99,33 @@ Location: Table 3
 
     assert "Full model: Val Top-5 16.5" in normalized
     assert "| Architecture | Removed layers 3,4 | 22.1 |" not in normalized
+
+
+def test_style_status_value_preserves_pending_for_audit_promotion() -> None:
+    # Pending remains unstyled until the claim audit resolves the verdict.
+    assert runner._style_status_value("Pending") == "Pending"
+    # Same with surrounding whitespace and casing.
+    assert runner._style_status_value("  pending ") == "  pending "
+    # Real status labels still get their colored span.
+    assert "Supported" in runner._style_status_value("Supported")
+    assert "Partially supported" in runner._style_status_value("Partially supported")
+    assert "Inconclusive" in runner._style_status_value("Inconclusive")
+
+
+def test_colorize_status_fields_leaves_pending_status_cells_alone() -> None:
+    # Pending status cells are resolved by the claim audit.
+    markdown = (
+        "| Claim | Evidence | Assessment | Status | Location |\n"
+        "|---|---|---|---|---|\n"
+        "| C1 | E1 | A1 | Pending | L1 |\n"
+        "| C2 | E2 | A2 | Supported | L2 |\n"
+    )
+
+    out = runner._colorize_status_fields(markdown)
+
+    assert "| Pending |" in out
+    assert "Inconclusive" not in out
+    assert "✓ Supported" in out
 
 
 def test_section_builder_normalizes_experiment_subsection_heading_levels() -> None:

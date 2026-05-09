@@ -669,6 +669,8 @@ def audit_review_markdown(
         for cap in (llm_verdict, result.agent_self_verdict):
             if cap:
                 new_label = _cap_status(new_label, cap)
+        if not new_label:
+            new_label = "inconclusive"
         result.final_status = new_label
 
         # Always rejoin the row: even if status didn't change, the assessment

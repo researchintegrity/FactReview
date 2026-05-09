@@ -249,6 +249,28 @@ def test_audit_review_markdown_promotes_pending_to_llm_verdict() -> None:
     )
 
 
+def test_audit_review_markdown_falls_back_when_pending_has_no_verdict() -> None:
+    md = (
+        "## 3. Claims\n"
+        "| Claim | Evidence | Assessment | Status | Location |\n"
+        "|---|---|---|---|---|\n"
+        "| C. | E. | ok | Pending | L |\n"
+        "## 4. Summary\n"
+    )
+
+    def garbage(prompt: str) -> dict[str, Any]:
+        return {"unexpected": "shape"}
+
+    new_md, outcome = audit_review_markdown(md, llm_call=garbage)
+
+    assert "Pending" not in new_md
+    assert "⚠ Inconclusive" in new_md
+    result = outcome.claim_results[0]
+    assert result.original_status == ""
+    assert result.llm_verdict == ""
+    assert result.final_status == "inconclusive"
+
+
 def test_audit_review_markdown_does_not_upgrade_supported_when_llm_says_supported() -> None:
     # When the LLM agrees with the existing Supported status, capping is a
     # no-op and the markdown is unchanged for the status cell.

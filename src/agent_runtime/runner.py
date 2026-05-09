@@ -1707,6 +1707,10 @@ def _best_baseline_numeric_model(
 
 
 def _style_status_value(value: str) -> str:
+    # Pending means the claim status is unresolved; leave it unstyled so the
+    # downstream audit can replace it with the resolved verdict.
+    if _strip_inline_formatting(value).strip().lower() == "pending":
+        return value
     normalized = _as_status_label(value)
     if normalized == "Supported":
         return '<span style="color: green;">✓ Supported</span>'
