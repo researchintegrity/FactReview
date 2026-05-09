@@ -33,10 +33,7 @@ from common.pipeline_context import (
     write_json_file,
 )
 from fact_generation.refcheck.refcheck import format_reference_check_markdown
-from review.report.claim_audit import (
-    apply_llm_claim_adjudication,
-    audit_review_markdown,
-)
+from review.report.claim_audit import audit_review_markdown
 from review.report.pdf_renderer import build_review_report_pdf
 from schemas.stage import StageResult
 from util.fs import copy_file_if_exists
@@ -269,46 +266,38 @@ def run_report_stage(
                 )
                 md_path.write_text(stripped, encoding="utf-8")
 
-        # Post-report claim audit: deterministic significance / axis / ablation
-        # checks plus an optional LLM adjudication pass. The agent runner's
-        # regex-based status assignment cannot tell whether a comparative claim
-        # is actually beyond the reported error bars; this pass downgrades
-        # those statuses and injects audit-flagged weakness bullets.
+        # Post-report claim audit. A single batched LLM call decides each
+        # claim's verdict and which methodological components are missing
+        # from the ablation tables; axis self-selection stays a structural
+        # check. The LLM call is mandatory (no rule-based fallback); upstream
+        # configuration must point at a working LLM.
         claim_audit_payload: dict[str, Any] = {}
-        if settings.enable_review_claim_audit:
-            for md_path in (review_md, review_md_clean):
-                if not md_path.exists():
-                    continue
-                source_text = md_path.read_text(encoding="utf-8", errors="ignore")
-                audited_text, outcome = audit_review_markdown(source_text)
-                llm_audits: list[dict[str, str]] = []
-                if settings.enable_review_claim_audit_llm:
-                    audited_text, llm_audits = apply_llm_claim_adjudication(audited_text)
-                if audited_text != source_text:
-                    md_path.write_text(audited_text, encoding="utf-8")
-                if md_path == review_md:
-                    claim_audit_payload = {
-                        "deterministic": {
-                            "claim_results": [
-                                {
-                                    "original_status": c.original_status,
-                                    "final_status": c.final_status,
-                                    "significance_cap": c.significance_cap,
-                                    "superlative": c.superlative,
-                                    "delta_over_sigma": c.delta_over_sigma,
-                                    "paper_value": c.paper_value,
-                                    "paper_sigma": c.paper_sigma,
-                                    "comparator_value": c.comparator_value,
-                                    "notes": c.notes,
-                                }
-                                for c in outcome.claim_results
-                            ],
-                            "axis_self_selection_ratio": outcome.axis_self_selection_ratio,
-                            "ablation_components_missing": outcome.ablation_components_missing,
-                            "extra_weaknesses": outcome.extra_weaknesses,
-                        },
-                        "llm": llm_audits,
-                    }
+        for md_path in (review_md, review_md_clean):
+            if not md_path.exists():
+                continue
+            source_text = md_path.read_text(encoding="utf-8", errors="ignore")
+            audited_text, outcome = audit_review_markdown(source_text)
+            if audited_text != source_text:
+                md_path.write_text(audited_text, encoding="utf-8")
+            if md_path == review_md:
+                claim_audit_payload = {
+                    "claim_results": [
+                        {
+                            "original_status": c.original_status,
+                            "final_status": c.final_status,
+                            "llm_verdict": c.llm_verdict,
+                            "llm_reason": c.llm_reason,
+                            "agent_self_verdict": c.agent_self_verdict,
+                            "agent_self_reason": c.agent_self_reason,
+                            "notes": c.notes,
+                        }
+                        for c in outcome.claim_results
+                    ],
+                    "axis_self_selection_ratio": outcome.axis_self_selection_ratio,
+                    "ablation_components_missing": outcome.ablation_components_missing,
+                    "extra_weaknesses": outcome.extra_weaknesses,
+                    "llm_raw": outcome.llm_raw,
+                }
 
         if reference_check_payload.get("enabled"):
             reference_check_markdown = _append_reference_check_section(

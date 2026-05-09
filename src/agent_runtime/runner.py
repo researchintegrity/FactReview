@@ -1163,20 +1163,14 @@ def _status_with_symbol(text: str) -> str:
     return raw
 
 
-def _looks_like_data_evidence(text: str) -> bool:
-    raw = str(text or "")
-    if re.search(
-        r"(?i)\b(mrr|mean rank|hits?@\d+|h@\d+|accuracy|acc|f1|bleu|rouge|map|auc|error rate|top-1|top-5)\b",
-        raw,
-    ):
-        return True
-    return bool(
-        re.search(r"(?i)\b(table|figure|experiment|result|dataset|benchmark|baseline|ablation)\b", raw)
-        and _first_float(raw) is not None
-    )
-
-
 def _normalize_claim_type_label(value: str) -> str:
+    """Normalize the agent-emitted Claim Type cell.
+
+    Returns one of {"Experimental", "Theoretical", "Methodological"} or "" when
+    the cell is empty or unrecognized. Callers fall back to "Methodological"
+    when this returns ""; the post-hoc claim audit (LLM-driven) re-evaluates
+    every claim regardless of the type label.
+    """
     raw = _strip_inline_formatting(value).strip().lower()
     if not raw:
         return ""
@@ -1189,27 +1183,9 @@ def _normalize_claim_type_label(value: str) -> str:
     return ""
 
 
-def _infer_claim_type_label(*, claim: str, evidence: str, location: str) -> str:
-    joined = f"{claim}\n{evidence}\n{location}"
-    if _looks_like_data_evidence(joined):
-        return "Experimental"
-    lowered = joined.lower()
-    if re.search(r"(?i)\b(theorem|proposition|lemma|corollary|proof|derivation|bound)\b", joined):
-        return "Theoretical"
-    if re.search(
-        r"(?i)\b(module|architecture|algorithm|design|mechanism|encoder|decoder|attention)\b", joined
-    ):
-        return "Methodological"
-    if "equation" in lowered or "objective" in lowered or "loss" in lowered:
-        return "Theoretical"
-    return "Methodological"
-
-
-def _resolve_claim_type_label(*, model_claim_type: str, claim: str, evidence: str, location: str) -> str:
-    normalized = _normalize_claim_type_label(model_claim_type)
-    if normalized:
-        return normalized
-    return _infer_claim_type_label(claim=claim, evidence=evidence, location=location)
+def _resolve_claim_type_label(model_claim_type: str) -> str:
+    """Trust the agent's Claim Type cell, defaulting to Methodological."""
+    return _normalize_claim_type_label(model_claim_type) or "Methodological"
 
 
 def _claims_status_legend_colored() -> str:
@@ -1297,104 +1273,6 @@ def _status_from_paper_observed(
     return ("In conflict", note)
 
 
-def _score_paper_evidence(*, claim: str, evidence: str, location: str, claim_type: str) -> tuple[int, list[str]]:
-    """Score how strongly the paper's own text supports a claim.
-
-    Returns (score, explanation_parts). Score >= 3 → strong, -1 < score < 3 → partial, <= -1 → conflict.
-    claim_type should be 'theoretical', 'methodological', or 'experimental'.
-    """
-    text = f"{claim}\n{evidence}\n{location}"
-    lower = text.lower()
-
-    has_location = bool(str(location or "").strip() and "not found in manuscript" not in lower)
-    has_missing_marker = bool(
-        re.search(r"(?i)\b(not found in manuscript|not provided|missing|unclear|unspecified)\b", text)
-    )
-    has_contradiction_marker = bool(
-        re.search(r"(?i)\b(contradict|inconsistent|does not hold|invalid|fails?)\b", text)
-    )
-
-    score = 0
-    parts: list[str] = []
-
-    if claim_type == "theoretical":
-        has_anchor = bool(
-            re.search(r"(?i)\b(theorem|proposition|lemma|corollary|proof|equation|derivation)\b", text)
-        )
-        has_signal = bool(
-            re.search(r"(?i)(\\[a-z]+|\bO\(|=|<=|>=|->|⇒|∇|argmin|argmax|loss|objective)", text)
-        )
-        if has_anchor:
-            score += 2
-            parts.append("The paper gives a formal anchor for the reasoning.")
-        else:
-            parts.append("The paper gives no clear theorem/proposition/proof anchor.")
-        if has_signal:
-            score += 1
-            parts.append("The evidence contains explicit mathematical derivation signals.")
-        else:
-            parts.append("The evidence lacks explicit derivation details.")
-    elif claim_type == "methodological":
-        has_design_anchor = bool(
-            re.search(
-                r"(?i)\b(module|architecture|algorithm|design|pipeline|encoder|decoder|attention|component)\b",
-                text,
-            )
-        )
-        has_impl_anchor = bool(
-            re.search(r"(?i)\b(section|table|figure|equation|appendix|implementation)\b", text)
-        )
-        if has_design_anchor:
-            score += 2
-            parts.append("The claim has concrete method-design anchors in the manuscript.")
-        else:
-            parts.append("The claim lacks explicit method-design anchors.")
-        if has_impl_anchor:
-            score += 1
-            parts.append("Supporting evidence references implementation-level manuscript artifacts.")
-        else:
-            parts.append("Supporting evidence lacks direct implementation-level anchors.")
-    else:  # experimental / no execution
-        has_data_anchor = bool(
-            re.search(
-                r"(?i)\b(table|figure|experiment|result|dataset|benchmark|baseline|ablation)\b", text
-            )
-        )
-        has_numeric = _first_float(text) is not None
-        if has_data_anchor:
-            score += 2
-            parts.append("The paper cites experimental tables or figures as evidence.")
-        else:
-            parts.append("The paper provides no direct experimental table or figure reference.")
-        if has_numeric:
-            score += 1
-            parts.append("Concrete numeric values are present in the evidence.")
-        else:
-            parts.append("No concrete numeric values found in the evidence.")
-
-    if has_location:
-        score += 1
-        parts.append(f"The cited location is {location.strip()}.")
-    else:
-        parts.append("No reliable manuscript location is provided.")
-    if has_missing_marker:
-        score -= 2
-        parts.append("The evidence indicates missing or incomplete support.")
-    if has_contradiction_marker:
-        score -= 2
-        parts.append("The evidence text suggests an unresolved inconsistency risk.")
-
-    return score, parts
-
-
-def _paper_status_from_score(score: int) -> str:
-    if score >= 3:
-        return "Supported"
-    if score <= -1:
-        return "In conflict"
-    return "Partially supported"
-
-
 def _build_experimental_claim_assessment(
     *,
     claim: str,
@@ -1402,6 +1280,13 @@ def _build_experimental_claim_assessment(
     location: str,
     alignment: dict[str, Any],
 ) -> tuple[str, str]:
+    """Build an assessment cell + status for an experimental claim.
+
+    When alignment data and parseable paper / observed values are both
+    available, we emit a deterministic numeric verdict via
+    ``_status_from_paper_observed``. Otherwise we emit a "Pending" status
+    and let the post-hoc LLM audit decide.
+    """
     joined = f"{claim} {evidence} {location}"
     dataset, metric = _claim_dataset_metric_hint(joined, alignment=alignment)
     observed = (
@@ -1414,20 +1299,12 @@ def _build_experimental_claim_assessment(
     )
 
     has_execution = bool(alignment)
-
     if has_execution and paper_val is not None and observed is not None:
-        # Both paper value and reproduced value available — apply the 2×2 matrix.
         exec_status, delta_note = _status_from_paper_observed(
             paper_val=paper_val,
             observed=observed,
             metric=metric or "metric",
         )
-        exec_passes = exec_status == "Supported"
-        paper_score, _ = _score_paper_evidence(
-            claim=claim, evidence=evidence, location=location, claim_type="experimental"
-        )
-        paper_strong = paper_score >= 3
-        paper_conflict = paper_score <= -1
         norm_metric = _norm_metric_key(metric)
         base = (
             f"Claim mapped to {dataset} / {metric}. "
@@ -1435,36 +1312,11 @@ def _build_experimental_claim_assessment(
             f"Reproduced={_fmt_value(observed, metric_key=norm_metric)}. "
             f"{delta_note}."
         )
-        if paper_strong and exec_passes:
-            return base, "Supported"
-        if paper_strong and not exec_passes:
-            return base + " Paper evidence is strong but reproduction did not align.", "Partially supported"
-        if paper_conflict:
-            return base + " Paper evidence is internally inconsistent.", "In conflict"
-        # paper partial
-        if exec_passes:
-            return base + " Results reproduced but paper evidence is incomplete.", "Partially supported"
-        return base + " Incomplete paper evidence and reproduction did not align.", "In conflict"
+        return base, exec_status
 
-    # No execution data or values could not be extracted — fall back to paper-only scoring.
-    paper_score, parts = _score_paper_evidence(
-        claim=claim, evidence=evidence, location=location, claim_type="experimental"
-    )
-    return " ".join(parts), _paper_status_from_score(paper_score)
-
-
-def _build_theoretical_claim_assessment(*, claim: str, evidence: str, location: str) -> tuple[str, str]:
-    score, parts = _score_paper_evidence(
-        claim=claim, evidence=evidence, location=location, claim_type="theoretical"
-    )
-    return " ".join(parts), _paper_status_from_score(score)
-
-
-def _build_methodological_claim_assessment(*, claim: str, evidence: str, location: str) -> tuple[str, str]:
-    score, parts = _score_paper_evidence(
-        claim=claim, evidence=evidence, location=location, claim_type="methodological"
-    )
-    return " ".join(parts), _paper_status_from_score(score)
+    # No execution data or values could not be extracted; defer status to
+    # the post-hoc claim audit.
+    return "", "Pending"
 
 
 def _augment_claims_with_assessment_status(
@@ -1565,12 +1417,7 @@ def _augment_claims_with_assessment_status(
         location = _cell_value(cells, location_idx, default_location)
         authored_assessment = _cell_value(cells, assessment_idx, "")
         model_claim_type = _cell_value(cells, claim_type_idx, "")
-        resolved_claim_type = _resolve_claim_type_label(
-            model_claim_type=model_claim_type,
-            claim=claim,
-            evidence=evidence,
-            location=location,
-        )
+        resolved_claim_type = _resolve_claim_type_label(model_claim_type)
         if resolved_claim_type == "Experimental":
             _generated_assess, stat = _build_experimental_claim_assessment(
                 claim=claim,
@@ -1578,21 +1425,14 @@ def _augment_claims_with_assessment_status(
                 location=location,
                 alignment=alignment,
             )
-        elif resolved_claim_type == "Theoretical":
-            _generated_assess, stat = _build_theoretical_claim_assessment(
-                claim=claim,
-                evidence=evidence,
-                location=location,
-            )
         else:
-            _generated_assess, stat = _build_methodological_claim_assessment(
-                claim=claim,
-                evidence=evidence,
-                location=location,
-            )
-        # The final assessment is system-derived and type-aware:
-        # experimental claims compare with aligned execution evidence,
-        # while theoretical/methodological claims are judged from manuscript anchors.
+            # Theoretical / methodological claims defer status to the
+            # post-hoc LLM-driven claim audit. The agent's authored
+            # assessment text is preserved as the visible cell content.
+            _generated_assess, stat = "", "Pending"
+        # Experimental claims with reproduction data carry a deterministic
+        # numeric assessment; everything else falls back to the agent's
+        # authored assessment, with the audit setting the final status.
         assess = _generated_assess or (
             authored_assessment
             if _is_meaningful_assessment(authored_assessment)
