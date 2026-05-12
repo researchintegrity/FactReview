@@ -1325,7 +1325,10 @@ def augment_claims_with_assessment_status(
     alignment: dict[str, Any],
 ) -> str:
     text = str(markdown_text or "")
-    sec = re.search(r"(?ims)^##\s+3\.\s+Claims\s*$\n(?P<body>.*?)(?=^##\s+|\Z)", text)
+    sec = re.search(
+        r"(?ims)^##\s+(?:\*\*)?3\.\s+Claims(?:\*\*)?\s*$\n(?P<body>.*?)(?=^##\s+|\Z)",
+        text,
+    )
     if not sec:
         return text
     body = sec.group("body")
@@ -1338,10 +1341,6 @@ def augment_claims_with_assessment_status(
             break
     if header_idx < 0:
         return text
-
-    def _cell_safe(v: str) -> str:
-        # Prevent markdown table column break due to literal pipe in generated text.
-        return str(v or "").replace("|", "/").strip()
 
     legend = _claims_status_legend_colored()
     if legend not in body:
@@ -1372,6 +1371,37 @@ def augment_claims_with_assessment_status(
         if idx < 0 or idx >= len(cells):
             return default
         return str(cells[idx] or "").strip()
+
+    def _cell_safe(value: str) -> str:
+        # Generated evidence sometimes contains math/set notation such as
+        # ``B | R | d``. Raw pipes split markdown tables, so preserve the
+        # visible character with an HTML entity inside cells.
+        return str(value or "").replace("|", "&#124;").strip()
+
+    def _normalized_claim_cells(cells: list[str]) -> list[str]:
+        expected = len(header_cells)
+        if len(cells) <= expected:
+            return cells + [""] * max(0, expected - len(cells))
+
+        header_signature = [
+            _strip_inline_formatting(cell).strip().lower() for cell in header_cells
+        ]
+        if header_signature == ["claim", "evidence", "assessment", "location"]:
+            return [
+                cells[0],
+                " | ".join(cells[1:-2]),
+                cells[-2],
+                cells[-1],
+            ]
+        if header_signature == ["claim", "evidence", "assessment", "status", "location"]:
+            return [
+                cells[0],
+                " | ".join(cells[1:-3]),
+                cells[-3],
+                cells[-2],
+                cells[-1],
+            ]
+        return cells[: expected - 1] + [" | ".join(cells[expected - 1 :])]
 
     def _is_meaningful_assessment(value: str) -> bool:
         plain = _strip_inline_formatting(value).strip().lower()
@@ -1406,7 +1436,7 @@ def augment_claims_with_assessment_status(
         s = ln.strip()
         if not (s.startswith("|") and s.endswith("|")):
             continue
-        cells = [c.strip() for c in s.strip("|").split("|")]
+        cells = _normalized_claim_cells([c.strip() for c in s.strip("|").split("|")])
         if len(cells) < 2:
             continue
         claim = _cell_value(cells, claim_idx, _cell_value(cells, 0, "Not found in manuscript"))
@@ -3128,8 +3158,13 @@ async def run_job_async(job_id: str) -> None:
             reason="hard_cap_2",
         )
     run_config = _build_run_config()
-    # Use the exact same full review prompt as user input (parity requirement).
-    next_input: str | list[Any] = prompt
+    # The full extraction contract already lives in the agent instructions.
+    # Keep the initial user input short so the first model request does not
+    # pay for the same paper-sized prompt twice.
+    next_input: str | list[Any] = (
+        "Begin the extraction for the bound paper. Follow the instructions and "
+        "submit the required report sections through review_final_markdown_write."
+    )
     usage_totals = {
         "requests": 0,
         "input_tokens": 0,

@@ -381,8 +381,8 @@ def audit_and_refine_final_report(
         if not revised_markdown:
             audit_iteration.compatibility_ok = False
             audit_iteration.compatibility_message = "empty revised_markdown"
-            result.stop_reason = "no_further_revision"
-            break
+            result.stop_reason = "revision_rejected_empty"
+            continue
 
         audit_iteration.revised = revised_markdown != result.final_markdown
         compatibility_ok, compatibility_message = _check_format_compatibility(
@@ -393,7 +393,7 @@ def audit_and_refine_final_report(
         audit_iteration.compatibility_message = compatibility_message
         if not compatibility_ok:
             result.stop_reason = "revision_changed_fixed_format"
-            break
+            continue
 
         validation = validate_final_report(
             markdown=revised_markdown,
@@ -406,7 +406,7 @@ def audit_and_refine_final_report(
         audit_iteration.validation_message = validation.message
         if not validation.ok:
             result.stop_reason = "revision_failed_validation"
-            break
+            continue
 
         if revised_markdown != result.final_markdown:
             result.applied = True

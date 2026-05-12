@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from agent_runtime.runner import augment_claims_with_assessment_status
 from review.report.claim_audit import audit_review_markdown
 
 
@@ -63,6 +64,37 @@ def test_audit_promotes_pending_to_llm_verdict() -> None:
     assert "✓ Supported" in new_md
     # Promotions out of Pending must NOT emit a "downgraded" weakness bullet.
     assert not any("Status downgraded" in b for b in outcome.extra_weaknesses)
+
+
+def test_claim_status_augmentation_preserves_pipe_inside_evidence_cell() -> None:
+    md = (
+        "## **3. Claims**\n"
+        "| Claim | Evidence | Assessment | Location |\n"
+        "|---|---|---|---|\n"
+        "| COMPGCN scales with relations. | Table 1 reports O(Kd^2 + Bd + B | R | d). | "
+        "Scope is limited. | Table 1 |\n"
+        "## 4. Summary\n"
+        "**Weaknesses:**\n- w\n\n"
+    )
+
+    augmented = augment_claims_with_assessment_status(md, summary={}, alignment={})
+    row = next(line for line in augmented.splitlines() if line.startswith("| COMPGCN"))
+    cells = [cell.strip() for cell in row.strip("|").split("|")]
+    assert len(cells) == 5
+    assert "B &#124; R &#124; d" in cells[1]
+    assert cells[3] == "Pending"
+
+    audited, outcome = audit_review_markdown(
+        augmented,
+        llm_call=_stub_llm([{"id": 0, "verdict": "partially_supported", "reason": "limited"}]),
+    )
+
+    audited_row = next(line for line in audited.splitlines() if line.startswith("| COMPGCN"))
+    audited_cells = [cell.strip() for cell in audited_row.strip("|").split("|")]
+    assert len(audited_cells) == 5
+    assert "B &#124; R &#124; d" in audited_cells[1]
+    assert "Partially supported" in audited_cells[3]
+    assert outcome.claim_results[0].final_status == "partially supported"
 
 
 def test_audit_takes_more_conservative_of_llm_and_agent_self_tag() -> None:

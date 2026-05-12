@@ -165,6 +165,38 @@ def _split_table_row(row: str) -> list[str]:
     return [c.strip() for c in s.strip("|").split("|")]
 
 
+def _cell_safe(value: str) -> str:
+    # Keep literal pipe characters visible inside cells without letting them
+    # become markdown table delimiters during status rewrites.
+    return str(value or "").replace("|", "&#124;").strip()
+
+
+def _normalize_claim_table_cells(cells: list[str], headers: list[str]) -> list[str]:
+    expected = len(headers)
+    if expected <= 0:
+        return cells
+    if len(cells) <= expected:
+        return cells + [""] * max(0, expected - len(cells))
+
+    header_signature = [_strip_html(h).replace("*", "").strip().lower() for h in headers]
+    if header_signature == ["claim", "evidence", "assessment", "location"]:
+        return [
+            cells[0],
+            " | ".join(cells[1:-2]),
+            cells[-2],
+            cells[-1],
+        ]
+    if header_signature == ["claim", "evidence", "assessment", "status", "location"]:
+        return [
+            cells[0],
+            " | ".join(cells[1:-3]),
+            cells[-3],
+            cells[-2],
+            cells[-1],
+        ]
+    return cells[: expected - 1] + [" | ".join(cells[expected - 1 :])]
+
+
 def _find_column_index(headers: list[str], *needles: str) -> int:
     lowered = [_strip_html(h).strip().lower() for h in headers]
     for needle in needles:
@@ -605,7 +637,7 @@ def _collect_claim_entries(claims_body: str) -> tuple[
         s = lines[j].strip()
         if not (s.startswith("|") and s.endswith("|")):
             break
-        cells = _split_table_row(lines[j])
+        cells = _normalize_claim_table_cells(_split_table_row(lines[j]), headers)
         if len(cells) <= max(claim_idx, evidence_idx, status_idx):
             j += 1
             continue
@@ -752,7 +784,7 @@ def audit_review_markdown(
         # cell may have had a self-tag stripped above.
         if new_label and new_label != normalized_original:
             cells[status_idx] = _format_status_html(new_label)
-        new_lines[entry["row_line_idx"]] = "| " + " | ".join(cells) + " |"
+        new_lines[entry["row_line_idx"]] = "| " + " | ".join(_cell_safe(c) for c in cells) + " |"
         outcome.claim_results.append(result)
 
     new_claims_body = "\n".join(new_lines)

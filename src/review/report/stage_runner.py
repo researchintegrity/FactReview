@@ -242,22 +242,21 @@ def run_report_stage(
     audit_ok = copy_file_if_exists(final_audit, review_audit)
     pdf_ok = copy_file_if_exists(final_pdf, pdf_path)
 
-    # Re-augment claims table with real execution alignment. The first augmentation
-    # pass (inside the agent runtime job) always ran with alignment={} because
-    # execution hadn't completed yet. The report stage runs after execution, so
-    # we re-run the augmentation here with the real alignment data.
+    # Re-normalize the claims table after the runtime job. The first pass inside
+    # the agent runtime ran before execution, so this stage can add real
+    # execution alignment when available and keep markdown-table escaping stable
+    # before the mandatory claim audit.
     if md_ok:
         exec_json = read_json_file(execution_stage_dir(run_dir) / "execution.json")
         exec_alignment = exec_json.get("alignment") if isinstance(exec_json, dict) else {}
-        if exec_alignment:
-            current_md = review_md.read_text(encoding="utf-8", errors="ignore")
-            augmented_md = augment_claims_with_assessment_status(
-                current_md,
-                summary=exec_json.get("summary") or {},
-                alignment=exec_alignment,
-            )
-            if augmented_md != current_md:
-                review_md.write_text(augmented_md, encoding="utf-8")
+        current_md = review_md.read_text(encoding="utf-8", errors="ignore")
+        augmented_md = augment_claims_with_assessment_status(
+            current_md,
+            summary=exec_json.get("summary") or {},
+            alignment=exec_alignment if isinstance(exec_alignment, dict) else {},
+        )
+        if augmented_md != current_md:
+            review_md.write_text(augmented_md, encoding="utf-8")
 
     settings = get_settings()
     reference_check_payload = _load_reference_check_payload(run_dir)
@@ -284,38 +283,35 @@ def run_report_stage(
                 )
                 md_path.write_text(stripped, encoding="utf-8")
 
-        # Post-report claim audit. A single batched LLM call decides each
-        # claim's verdict and which methodological components are missing
-        # from the ablation tables; axis self-selection stays a structural
-        # check. The LLM call is mandatory (no rule-based fallback); upstream
-        # configuration must point at a working LLM.
-        claim_audit_payload: dict[str, Any] = {}
-        for md_path in (review_md, review_md_clean):
-            if not md_path.exists():
-                continue
-            source_text = md_path.read_text(encoding="utf-8", errors="ignore")
+        # Post-report claim audit. review_md and review_md_clean are identical
+        # at this point (refcheck is appended later only to review_md), so run
+        # the mandatory LLM audit once and copy the audited canonical markdown
+        # into the clean teaser source.
+        claim_audit_payload = {}
+        if review_md.exists():
+            source_text = review_md.read_text(encoding="utf-8", errors="ignore")
             audited_text, outcome = audit_review_markdown(source_text)
             if audited_text != source_text:
-                md_path.write_text(audited_text, encoding="utf-8")
-            if md_path == review_md:
-                claim_audit_payload = {
-                    "claim_results": [
-                        {
-                            "original_status": c.original_status,
-                            "final_status": c.final_status,
-                            "llm_verdict": c.llm_verdict,
-                            "llm_reason": c.llm_reason,
-                            "agent_self_verdict": c.agent_self_verdict,
-                            "agent_self_reason": c.agent_self_reason,
-                            "notes": c.notes,
-                        }
-                        for c in outcome.claim_results
-                    ],
-                    "axis_self_selection_ratio": outcome.axis_self_selection_ratio,
-                    "ablation_components_missing": outcome.ablation_components_missing,
-                    "extra_weaknesses": outcome.extra_weaknesses,
-                    "llm_raw": outcome.llm_raw,
-                }
+                review_md.write_text(audited_text, encoding="utf-8")
+            shutil.copy2(review_md, review_md_clean)
+            claim_audit_payload = {
+                "claim_results": [
+                    {
+                        "original_status": c.original_status,
+                        "final_status": c.final_status,
+                        "llm_verdict": c.llm_verdict,
+                        "llm_reason": c.llm_reason,
+                        "agent_self_verdict": c.agent_self_verdict,
+                        "agent_self_reason": c.agent_self_reason,
+                        "notes": c.notes,
+                    }
+                    for c in outcome.claim_results
+                ],
+                "axis_self_selection_ratio": outcome.axis_self_selection_ratio,
+                "ablation_components_missing": outcome.ablation_components_missing,
+                "extra_weaknesses": outcome.extra_weaknesses,
+                "llm_raw": outcome.llm_raw,
+            }
 
         if reference_check_payload.get("enabled"):
             reference_check_markdown = _append_reference_check_section(
